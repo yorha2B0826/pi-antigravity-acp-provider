@@ -10,6 +10,7 @@ import type { TObject, TString } from "@oh-my-pi/omptype/typebox";
 import { Type } from "typebox";
 
 import { inspectAntigravityAuth } from "../src/acp/antigravity.js";
+import { describeCredentialStorage } from "../src/acp/credential-storage.js";
 import { resolveAntigravityAcpEntry } from "../src/acp/process.js";
 import {
 	checkAntigravityAcpUpdate,
@@ -201,6 +202,7 @@ export default function antigravityAcpExtension(pi: ExtensionAPI): void {
 					`Runtime: installed=${setup.installedVersion ?? "external/unknown"} approved=${update?.approvedVersion ?? setup.approvedVersion} registry=${update?.latestVersion ?? "unavailable"} updates=${setup.updateMode}; ACP SDK ${ACP_SDK_VERSION}, protocol ${ACP_PROTOCOL_VERSION}`,
 					`Antigravity server: ${entry}`,
 					`Authentication: ${auth.status}${auth.authType ? ` (${auth.authType})` : ""}`,
+					`Credential storage (preflight): ${describeCredentialStorage()}`,
 					`Requested permission mode: ${permissionModeLabel(snapshot.permissionMode)}`,
 					`Active bindings: ${snapshot.bindings}`,
 					formatMetrics(snapshot.metrics),
