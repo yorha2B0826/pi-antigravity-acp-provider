@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { SimpleStreamOptions } from "@oh-my-pi/pi-ai";
 
 import { AntigravityAcpConnection, type AntigravityConnectionOptions } from "../src/acp/connection.js";
 import { AcpSessionStore } from "../src/acp/session-store.js";
@@ -10,6 +11,10 @@ import { findSessionSelector, sessionModels } from "../src/acp/session-state.js"
 import { projectModels } from "../src/models.js";
 import { createAntigravityProvider } from "../src/provider.js";
 import { AntigravityRuntime } from "../src/runtime.js";
+
+/** omp types `reasoning` as its `Effort` string enum; the ACP layer only reads the tier name. */
+const effort = (level: "low" | "medium" | "high"): NonNullable<SimpleStreamOptions["reasoning"]> =>
+	level as unknown as NonNullable<SimpleStreamOptions["reasoning"]>;
 
 const fixture = fileURLToPath(new URL("./fixtures/model-selection-agent.mjs", import.meta.url));
 function connection(scenario: string, options: Partial<AntigravityConnectionOptions> = {}) {
@@ -112,9 +117,17 @@ describe("model selection integration", () => {
 		try {
 			const session = await acp.newSession(process.cwd());
 			const pending = acp.setModel(session.sessionId, "gemini-b-low", controller.signal);
-			const rejected = expect(pending).rejects.toMatchObject({ code: "aborted" });
+			// Bun's `expect(pending).rejects` matcher blocks this suite's event loop
+			// while the ACP child is alive, so the abort timer below would never
+			// fire; settle the promise explicitly instead (vitest and bun agree).
+			const settled = pending.then(
+				() => ({ aborted: false as const }),
+				(error: unknown) => ({ aborted: true as const, error }),
+			);
 			setTimeout(() => controller.abort(), 50);
-			await rejected;
+			const outcome = await settled;
+			expect(outcome.aborted).toBe(true);
+			expect(outcome.aborted === true && outcome.error).toMatchObject({ code: "aborted" });
 		} finally { controller.abort(); await acp.close(); }
 	});
 
@@ -122,18 +135,24 @@ describe("model selection integration", () => {
 		const runtime = new AntigravityRuntime((options) => connection("split", options));
 		const { provider } = createAntigravityProvider(runtime);
 		try {
-			let published = false;
-			await provider.refreshModels!({ allowNetwork: true, signal: new AbortController().signal,
-				publish: async ({ update }) => { update?.(); published = true; return true; } });
-			expect(published).toBe(true);
-			const model = provider.getModels().find((candidate) => candidate.id === "gemini-b")!;
+			// omp's provider config has no publish callback: `fetchDynamicModels` is the
+			// discovery entry point and returns the catalog the host registers.
+			const published = (await provider.fetchDynamicModels!(undefined)).find((candidate) => candidate.id === "gemini-b")!;
+			expect(published).toMatchObject({ reasoning: true });
+			expect(published.thinking).toMatchObject({ mode: "effort", efforts: ["low", "medium", "high"] });
+			const model = projectModels(["b"].flatMap((base) =>
+				(["low", "medium", "high"] as const).map((effort) => ({
+					modelId: `gemini-${base}-${effort}`,
+					name: `Gemini ${base.toUpperCase()} (${effort})`,
+				})),
+			)).find((candidate) => candidate.id === "gemini-b")!;
 			expect(model).toMatchObject({ reasoning: true, thinkingLevelMap: { low: "gemini-b-low", high: "gemini-b-high" } });
 			const firstContext = { messages: [{ role: "user" as const, content: "first", timestamp: 1 }] };
-			const first = await runtime.stream(model, firstContext, { sessionId: "warm-effort", reasoning: "low" }).stream.result();
+			const first = await runtime.stream(model, firstContext, { sessionId: "warm-effort", reasoning: effort("low") }).stream.result();
 			expect(first.content).toEqual([{ type: "text", text: "gemini-b/low" }]);
 			const generation = (await runtime.snapshot()).processes[0]?.generation;
 			const second = await runtime.stream(model, { messages: [...firstContext.messages, first,
-				{ role: "user", content: "second", timestamp: 2 }] }, { sessionId: "warm-effort", reasoning: "high" }).stream.result();
+				{ role: "user", content: "second", timestamp: 2 }] }, { sessionId: "warm-effort", reasoning: effort("high") }).stream.result();
 			expect(second.content).toEqual([{ type: "text", text: "gemini-b/high" }]);
 			expect((await runtime.snapshot()).processes[0]?.generation).toBe(generation);
 		} finally { await runtime.close(); }
@@ -154,13 +173,13 @@ describe("model selection integration", () => {
 		const modelA = models.find((model) => model.id === "gemini-a")!;
 		const modelB = models.find((model) => model.id === "gemini-b")!;
 		const context = { messages: [{ role: "user" as const, content: "first", timestamp: 1 }] };
-		const options = { sessionId: "selection-recovery", reasoning: "high" as const };
+		const options = { sessionId: "selection-recovery", reasoning: effort("high") };
 		try {
 			const first = await runtime.stream(modelA, context, options).stream.result();
 			expect(first.content).toEqual([{ type: "text", text: "gemini-a/high" }]);
 			expect(store.get(options.sessionId)).toBeDefined();
 			const next = { messages: [...context.messages, first, { role: "user" as const, content: "next", timestamp: 2 }] };
-			const failed = await runtime.stream(modelB, next, { ...options, reasoning: "low" }).stream.result();
+			const failed = await runtime.stream(modelB, next, { ...options, reasoning: effort("low") }).stream.result();
 			expect(failed.stopReason).toBe("error");
 			expect((await runtime.snapshot()).bindings).toBe(0);
 			expect(store.get(options.sessionId)).toBeUndefined();

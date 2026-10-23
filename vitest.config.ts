@@ -3,7 +3,7 @@ import { configDefaults, defineConfig } from "vitest/config";
 export default defineConfig({
 	test: {
 		include: ["test/**/*.test.ts"],
-		// omp port: these five suites import @oh-my-pi host packages whose module
+		// omp port: these suites import @oh-my-pi host packages whose module
 		// initialization touches the Bun global (e.g. `Bun.env` in pi-utils) and
 		// whose entries are raw TypeScript — vitest workers run under Node, where
 		// they cannot load. They still type-check via `tsc` and can be executed
@@ -17,6 +17,7 @@ export default defineConfig({
 			"test/pi-events.test.ts",
 			"test/runtime.test.ts",
 			"test/runtime-safety.test.ts",
+			"test/model-selection.integration.test.ts",
 		],
 		testTimeout: 10_000,
 	},
